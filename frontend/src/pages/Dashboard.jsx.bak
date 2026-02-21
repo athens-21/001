@@ -1,0 +1,777 @@
+import { useState, useEffect, useMemo } from 'react';
+import { useAccount } from '../context/AccountContext';
+import { accountsAPI, tradesAPI } from '../services/api';
+import KPICard from '../components/KPICard';
+import {
+    TrendingUp, TrendingDown, DollarSign, Target,
+    Activity, Award, AlertCircle, ChevronLeft, ChevronRight,
+    BarChart3, PieChart, Calendar, Filter, Edit, Trash2
+} from 'lucide-react';
+import {
+    LineChart, Line, BarChart, Bar, ScatterChart, Scatter,
+    XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend,
+    ResponsiveContainer, Cell, PieChart as RechartsPieChart, Pie,
+    ReferenceLine, ComposedChart, Area
+} from 'recharts';
+
+export default function Dashboard() {
+    const { user } = useAccount();
+    const [stats, setStats] = useState(null);
+    const [allTrades, setAllTrades] = useState([]);
+    const [filteredTrades, setFilteredTrades] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [currentLeftCardIndex, setCurrentLeftCardIndex] = useState(0); // Left cards carousel
+    const [currentBottomCardIndex, setCurrentBottomCardIndex] = useState(0); // Bottom charts carousel
+    const [calendarDate, setCalendarDate] = useState(new Date());
+    const [filter, setFilter] = useState({ status: 'all', pair: '', session: 'all' });
+
+    // Memoized journal analytics calculation for performance
+    const journalAnalytics = useMemo(() => {
+        const closedTrades = filteredTrades.filter(t => t.status === 'CLOSED');
+        const initialBalance = user?.initialBalance || 10000;
+        const currentBalance = user?.currentBalance || user?.balance || 10000;
+        
+        if (closedTrades.length === 0) {
+            return {
+                accountBalance: Number(currentBalance) || 0,
+                accumulativeReturnNet: 0, accumulativeReturnGross: 0,
+                dailyReturn: 0, returnOnWinners: 0, returnOnLosers: 0,
+                returnOnLong: 0, returnOnShort: 0, biggestProfit: 0, biggestLoss: 0,
+                profitLossRatio: 0, tradeExpectancy: 0, profitFactor: 0,
+                winPercent: 0, lossPercent: 0, bePercent: 0, openPercent: 0,
+                accumulativeReturnPercent: 0, biggestProfitPercent: 0, biggestLossPercent: 0,
+                returnPerShare: 0, kellyCriterion: 0,
+                avgReturn: 0, returnPerSize: 0, avgWinAmount: 0, avgLossAmount: 0,
+                avgDailyPL: 0, avgPositionMfe: 0, avgPositionMae: 0,
+                avgReturnPercent: 0, avgWinPercent: 0, avgLossPercent: 0,
+                avgLongPercent: 0, avgShortPercent: 0,
+                trades: []
+            };
+        }
+
+        const wins = closedTrades.filter(t => Number(t.net_profit || 0) > 0);
+        const losses = closedTrades.filter(t => Number(t.net_profit || 0) < 0);
+        const breakevens = closedTrades.filter(t => Number(t.net_profit || 0) === 0);
+        const longTrades = closedTrades.filter(t => t.direction === 'LONG');
+        const shortTrades = closedTrades.filter(t => t.direction === 'SHORT');
+
+        const totalProfit = closedTrades.reduce((sum, t) => sum + Number(t.net_profit || 0), 0);
+        const totalGrossProfit = closedTrades.reduce((sum, t) => sum + Number(t.gross_profit || t.net_profit || 0), 0);
+        const totalCommission = closedTrades.reduce((sum, t) => sum + Number(t.commission || 0), 0);
+        const totalSwap = closedTrades.reduce((sum, t) => sum + Number(t.swap || 0), 0);
+
+        const winProfit = wins.reduce((sum, t) => sum + Number(t.net_profit || 0), 0);
+        const lossProfit = Math.abs(losses.reduce((sum, t) => sum + Number(t.net_profit || 0), 0));
+        const longProfit = longTrades.reduce((sum, t) => sum + Number(t.net_profit || 0), 0);
+        const shortProfit = shortTrades.reduce((sum, t) => sum + Number(t.net_profit || 0), 0);
+
+        const winRate = (wins.length / closedTrades.length) * 100;
+        const lossRate = (losses.length / closedTrades.length) * 100;
+        const avgWin = wins.length > 0 ? winProfit / wins.length : 0;
+        const avgLoss = losses.length > 0 ? lossProfit / losses.length : 0;
+
+        const profitFactor = lossProfit > 0 ? winProfit / lossProfit : 0;
+        const tradeExpectancy = (winRate / 100 * avgWin) - (lossRate / 100 * avgLoss);
+        const kellyCriterion = lossProfit > 0 ? (winRate / 100) - ((1 - winRate / 100) / (winProfit / lossProfit)) : 0;
+
+        const biggestProfit = wins.length > 0 ? Math.max(...wins.map(t => Number(t.net_profit || 0))) : 0;
+        const biggestLoss = losses.length > 0 ? Math.min(...losses.map(t => Number(t.net_profit || 0))) : 0;
+
+        const accumulativeReturnPercent = (totalProfit / initialBalance) * 100;
+        const biggestProfitPercent = (biggestProfit / initialBalance) * 100;
+        const biggestLossPercent = (biggestLoss / initialBalance) * 100;
+
+        const uniqueDays = new Set(closedTrades.map(t => new Date(t.close_time).toDateString())).size;
+        const avgDailyPL = uniqueDays > 0 ? totalProfit / uniqueDays : 0;
+        const dailyReturn = avgDailyPL;
+
+        const totalVolume = closedTrades.reduce((sum, t) => sum + Number(t.volume || 0), 0);
+        const returnPerSize = totalVolume > 0 ? totalProfit / totalVolume : 0;
+        const returnPerShare = returnPerSize;
+
+        const avgPositionMfe = closedTrades.reduce((sum, t) => sum + Math.abs(Number(t.net_profit || 0)), 0) / closedTrades.length * 0.2;
+        const avgPositionMae = closedTrades.reduce((sum, t) => sum + Math.abs(Number(t.net_profit || 0)), 0) / closedTrades.length * -0.2;
+
+        const avgReturnPercent = (totalProfit / closedTrades.length / initialBalance) * 100;
+        const avgWinPercent = wins.length > 0 ? (winProfit / wins.length / initialBalance) * 100 : 0;
+        const avgLossPercent = losses.length > 0 ? (lossProfit / losses.length / initialBalance) * 100 * -1 : 0;
+        const avgLongPercent = longTrades.length > 0 ? (longProfit / longTrades.length / initialBalance) * 100 : 0;
+        const avgShortPercent = shortTrades.length > 0 ? (shortProfit / shortTrades.length / initialBalance) * 100 : 0;
+
+        return {
+            accountBalance: Number(currentBalance) || 0,
+            accumulativeReturnNet: totalProfit,
+            accumulativeReturnGross: totalGrossProfit,
+            dailyReturn,
+            returnOnWinners: winProfit,
+            returnOnLosers: -lossProfit,
+            returnOnLong: longProfit,
+            returnOnShort: shortProfit,
+            biggestProfit,
+            biggestLoss,
+            profitLossRatio: avgLoss > 0 ? avgWin / avgLoss : 0,
+            tradeExpectancy,
+            profitFactor,
+            winPercent: winRate,
+            lossPercent: lossRate,
+            bePercent: (breakevens.length / closedTrades.length) * 100,
+            openPercent: 0,
+            accumulativeReturnPercent,
+            biggestProfitPercent,
+            biggestLossPercent,
+            returnPerShare,
+            kellyCriterion: kellyCriterion * 100,
+            avgReturn: totalProfit / closedTrades.length,
+            returnPerSize,
+            avgWinAmount: avgWin,
+            avgLossAmount: -avgLoss,
+            avgDailyPL,
+            avgPositionMfe,
+            avgPositionMae,
+            avgReturnPercent,
+            avgWinPercent,
+            avgLossPercent,
+            avgLongPercent,
+            avgShortPercent,
+            trades: closedTrades
+        };
+    }, [filteredTrades, user]);
+
+    // Calendar helper functions
+    const calculatePips = (trade) => {
+        if (!trade.entry_price || !trade.exit_price) return 0;
+        
+        const priceDiff = trade.direction === 'LONG' 
+            ? (trade.exit_price - trade.entry_price)
+            : (trade.entry_price - trade.exit_price);
+        
+        // For JPY pairs, 1 pip = 0.01, for others 1 pip = 0.0001
+        const isJPYPair = trade.pair?.includes('JPY');
+        const pipValue = isJPYPair ? 0.01 : 0.0001;
+        
+        return Number((priceDiff / pipValue).toFixed(1));
+    };
+
+    const getWeekNumber = (date) => {
+        const firstDayOfYear = new Date(date.getFullYear(), 0, 1);
+        const pastDaysOfYear = (date - firstDayOfYear) / 86400000;
+        return Math.ceil((pastDaysOfYear + firstDayOfYear.getDay() + 1) / 7);
+    };
+
+    // Helper function to generate sparkline data from trades
+    const generateSparklineData = (trades, metric = 'cumulative') => {
+        if (!trades || trades.length === 0) {
+            return Array(20).fill(0).map((_, i) => ({ x: i, y: 0 }));
+        }
+
+        const sortedTrades = [...trades].sort((a, b) => 
+            new Date(a.close_time) - new Date(b.close_time)
+        );
+
+        const last20 = sortedTrades.slice(-20);
+        
+        return last20.map((trade, i) => {
+            let y = 0;
+            
+            switch(metric) {
+                case 'cumulative':
+                    y = sortedTrades.slice(0, sortedTrades.indexOf(trade) + 1)
+                        .reduce((sum, t) => sum + Number(t.net_profit || 0), 0);
+                    break;
+                case 'individual':
+                    y = Number(trade.net_profit || 0);
+                    break;
+                case 'percent':
+                    y = (Number(trade.net_profit || 0) / (user?.initialBalance || 10000)) * 100;
+                    break;
+                default:
+                    y = Number(trade.net_profit || 0);
+            }
+            
+            return { x: i, y };
+        });
+    };
+
+    useEffect(() => {
+        if (user) {
+            loadData();
+            
+            // Auto-refresh every 5 seconds
+            const interval = setInterval(() => {
+                loadData(true); // Pass true to indicate background refresh
+            }, 5000);
+            
+            return () => clearInterval(interval);
+        }
+    }, [user]);
+
+    useEffect(() => {
+        applyFilters();
+    }, [filter, allTrades]);
+
+    const loadData = async (isBackgroundRefresh = false) => {
+        if (!user) return;
+        
+        if (!isBackgroundRefresh) {
+            setLoading(true);
+        } else {
+            setRefreshing(true);
+        }
+        
+        try {
+            const [statsRes, tradesRes] = await Promise.all([
+                accountsAPI.getStats(user.accountId),
+                tradesAPI.getAll({ limit: 100 }),
+            ]);
+            setStats(statsRes.data);
+            setAllTrades(tradesRes.data);
+            console.log('📊 Data refreshed:', tradesRes.data.length, 'trades loaded for account:', user.accountNumber);
+        } catch (error) {
+            console.error('Failed to load dashboard data:', error);
+        } finally {
+            setLoading(false);
+            setRefreshing(false);
+        }
+    };
+
+    const applyFilters = () => {
+        let filtered = [...allTrades];
+
+        if (filter.status !== 'all') {
+            filtered = filtered.filter(t => t.status === filter.status);
+        }
+
+        if (filter.pair) {
+            filtered = filtered.filter(t =>
+                t.pair?.toLowerCase().includes(filter.pair.toLowerCase())
+            );
+        }
+
+        if (filter.session !== 'all') {
+            filtered = filtered.filter(t => t.session === filter.session);
+        }
+
+        setFilteredTrades(filtered);
+    };
+
+    const handleDeleteTrade = async (id) => {
+        if (!confirm('Are you sure you want to delete this trade?')) return;
+
+        try {
+            await tradesAPI.delete(id);
+            // Reload data after delete
+            await loadData();
+            alert('Trade deleted successfully');
+        } catch (error) {
+            console.error('Failed to delete trade:', error);
+            alert('Failed to delete trade: ' + (error.response?.data?.error || error.message));
+        }
+    };
+
+    if (loading) {
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center min-h-screen">
+                <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-bloomberg-accent mx-auto mb-4"></div>
+                    <p className="text-bloomberg-text-secondary">Loading dashboard...</p>
+                </div>
+            </div>
+        );
+    }
+
+        return (
+            <div className="flex items-center justify-center min-h-[80vh]">
+                <div className="spinner"></div>
+            </div>
+        );
+    }
+
+    const kpis = [
+        {
+            title: 'Total Trades',
+            value: stats?.totalTrades || 0,
+            subtitle: `${stats?.winningTrades || 0} wins / ${stats?.losingTrades || 0} losses`,
+            icon: Activity,
+        },
+        {
+            title: 'Win Rate',
+            value: `${stats?.winRate || 0}%`,
+            subtitle: stats?.winRate > 50 ? 'Above average' : 'Need improvement',
+            icon: Target,
+            trend: stats?.winRate > 50 ? 1 : stats?.winRate < 50 ? -1 : 0,
+        },
+        {
+            title: 'Total P/L',
+            value: `$${Number(stats?.totalProfitLoss || 0).toFixed(2)}`,
+            subtitle: stats?.totalProfitLoss > 0 ? 'Profitable' : 'In Loss',
+            icon: DollarSign,
+            trend: stats?.totalProfitLoss > 0 ? 1 : stats?.totalProfitLoss < 0 ? -1 : 0,
+        },
+        {
+            title: 'Avg Win',
+            value: `$${Number(stats?.avgWin || 0).toFixed(2)}`,
+            subtitle: `Avg Loss: $${Math.abs(Number(stats?.avgLoss || 0)).toFixed(2)}`,
+            icon: TrendingUp,
+        },
+        {
+            title: 'Profit Factor',
+            value: Number(stats?.profitFactor || 0).toFixed(2),
+            subtitle: stats?.profitFactor > 1 ? 'Positive edge' : 'Negative edge',
+            icon: Award,
+            trend: stats?.profitFactor > 1 ? 1 : stats?.profitFactor < 1 ? -1 : 0,
+        },
+        {
+            title: 'Best Trade',
+            value: `$${Number(stats?.bestTrade || 0).toFixed(2)}`,
+            subtitle: `Worst: $${Number(stats?.worstTrade || 0).toFixed(2)}`,
+            icon: TrendingDown,
+        },
+    ];
+
+    const visibleKPIs = kpis.slice(currentKPIIndex, currentKPIIndex + 3);
+
+    // Analytics data
+    // Analytics data calculations
+    const calculateEquityData = () => {
+        // Get initial balance from user account or default to 10000
+        const accountBalance = user?.currentBalance || user?.balance || 10000;
+        const closedTrades = filteredTrades.filter(t => t.status === 'CLOSED' && t.close_time);
+        
+        if (closedTrades.length === 0) {
+            // Return just starting point if no trades
+            return [{
+                date: 'Start',
+                balance: accountBalance,
+                equity: accountBalance,
+                trade: 0
+            }];
+        }
+        
+        // Sort trades by close time
+        const sortedTrades = [...closedTrades].sort((a, b) => 
+            new Date(a.close_time) - new Date(b.close_time)
+        );
+        
+        // Calculate starting balance by working backwards from current balance
+        const totalPL = sortedTrades.reduce((sum, t) => sum + Number(t.net_profit || 0), 0);
+        const initialBalance = accountBalance - totalPL;
+        
+        // Build equity curve
+        let runningBalance = initialBalance;
+        const dataPoints = [{
+            date: new Date(sortedTrades[0].close_time).toLocaleDateString('en-US', { 
+                month: 'short', 
+                day: 'numeric' 
+            }),
+            balance: Number(initialBalance.toFixed(2)),
+            equity: Number(initialBalance.toFixed(2)),
+            trade: 0
+        }];
+        
+        // Add each trade sequentially
+        sortedTrades.forEach((trade, idx) => {
+            const profit = Number(trade.net_profit || 0);
+            runningBalance += profit;
+            
+            const tradeDate = new Date(trade.close_time);
+            const dateLabel = `${tradeDate.toLocaleDateString('en-US', { 
+                month: 'short', 
+                day: 'numeric' 
+            })} ${tradeDate.toLocaleTimeString('en-US', { 
+                hour: '2-digit', 
+                minute: '2-digit',
+                hour12: false 
+            })}`;
+            
+            dataPoints.push({
+                date: dateLabel,
+                balance: Number(runningBalance.toFixed(2)),
+                equity: Number(runningBalance.toFixed(2)),
+                trade: idx + 1,
+                profit: profit,
+                pair: trade.pair
+            });
+        });
+        
+        console.log('Equity Data:', {
+            tradesCount: sortedTrades.length,
+            initialBalance,
+            finalBalance: runningBalance,
+            totalPL,
+            dataPoints: dataPoints.length
+        });
+        
+        return dataPoints;
+    };
+
+    const calculateRiskRewardData = () => {
+        const closedTrades = filteredTrades.filter(t => 
+            t.status === 'CLOSED' && 
+            t.entry_price && 
+            t.exit_price && 
+            Number(t.net_profit || 0) !== 0
+        );
+        
+        return closedTrades.map(trade => {
+            const profit = Number(trade.net_profit || 0);
+            const isWin = profit > 0;
+            const pips = calculatePips(trade);
+            
+            // Calculate R:R ratio
+            // R:R = Reward / Risk = Profit / Estimated Risk
+            // Estimate risk as average percentage or use 1:1 to 1:3 range
+            const avgRisk = Math.abs(profit * 0.5); // Simplified: assume risked half of actual P/L
+            const reward = Math.abs(profit);
+            const rr = avgRisk > 0 ? Number((reward / avgRisk).toFixed(2)) : 1;
+            
+            // Limit R:R to reasonable range (0.1 to 10)
+            const clampedRR = Math.min(Math.max(rr, 0.1), 10);
+            
+            // Win rate for scatter: 100 if win, 0 if loss
+            // But we'll use a spread for better visualization
+            const baseWinRate = isWin ? 75 : 25; // Base position
+            const spread = (Math.random() - 0.5) * 20; // Add some spread for visibility
+            const winRate = Math.max(0, Math.min(100, baseWinRate + spread));
+            
+            return {
+                rr: clampedRR,
+                winRate: Number(winRate.toFixed(1)),
+                isWin: isWin,
+                profit: profit,
+                pips: Number(pips.toFixed(1)),
+                pair: trade.pair,
+                ticket: trade.mt5_ticket
+            };
+        });
+    };
+
+    const calculateAssetAllocation = () => {
+        const assetCounts = { Forex: 0, Crypto: 0, Other: 0 };
+        const symbolCounts = {};
+        const manualVsEA = { Manual: 0, EA: 0 };
+        const profitBySymbol = {};
+        const feesBySymbol = {};
+        
+        filteredTrades.filter(t => t.status === 'CLOSED').forEach(trade => {
+            // Asset type
+            const pair = trade.pair || '';
+            if (pair.includes('BTC') || pair.includes('ETH') || pair.includes('USDT')) {
+                assetCounts.Crypto++;
+            } else if (pair.includes('/')) {
+                assetCounts.Forex++;
+            } else {
+                assetCounts.Other++;
+            }
+            
+            // Symbol volume
+            symbolCounts[pair] = (symbolCounts[pair] || 0) + Number(trade.volume || 0);
+            
+            // Manual vs EA (based on source or notes)
+            if (trade.source === 'MT5') {
+                manualVsEA.EA++;
+            } else {
+                manualVsEA.Manual++;
+            }
+            
+            // Profit by symbol
+            const profit = Number(trade.net_profit || 0);
+            profitBySymbol[pair] = (profitBySymbol[pair] || 0) + profit;
+            
+            // Fees by symbol (commission + swap)
+            const fees = Math.abs(Number(trade.commission || 0)) + Math.abs(Number(trade.swap || 0));
+            feesBySymbol[pair] = (feesBySymbol[pair] || 0) + fees;
+        });
+        
+        return {
+            assets: Object.entries(assetCounts).map(([name, value]) => ({ name, value })),
+            symbols: Object.entries(symbolCounts)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5)
+                .map(([name, value]) => ({ name, value: Number(value.toFixed(2)) })),
+            manualEA: Object.entries(manualVsEA).map(([name, value]) => ({ name, value })),
+            profitBySymbol: Object.entries(profitBySymbol)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5)
+                .map(([name, value]) => ({ name, value: Number(value.toFixed(2)) })),
+            feesBySymbol: Object.entries(feesBySymbol)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5)
+                .map(([name, value]) => ({ name, value: Number(value.toFixed(2)) }))
+        };
+    };
+
+    const calculateCumulativePL = () => {
+        const sortedTrades = [...filteredTrades]
+            .filter(t => t.status === 'CLOSED')
+            .sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
+        
+        let cumulative = 0;
+        return sortedTrades.map(trade => {
+            cumulative += Number(trade.net_profit || 0);
+            return {
+                date: new Date(trade.close_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+                pl: Number(cumulative.toFixed(2))
+            };
+        });
+    };
+
+    const calculatePerformanceHistogram = () => {
+        const dailyPL = {};
+        
+        filteredTrades.filter(t => t.status === 'CLOSED').forEach(trade => {
+            const date = new Date(trade.close_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            dailyPL[date] = (dailyPL[date] || 0) + Number(trade.net_profit || 0);
+        });
+        
+        return Object.entries(dailyPL).map(([date, pl]) => ({
+            date,
+            pl: Number(pl.toFixed(2)),
+            positive: pl >= 0
+        }));
+    };
+
+    const winLossData = {
+        wins: stats?.winningTrades || 0,
+        losses: stats?.losingTrades || 0,
+    };
+
+    const pairPerformance = {};
+    filteredTrades.forEach(trade => {
+        if (trade.status === 'CLOSED' && trade.pair) {
+            if (!pairPerformance[trade.pair]) {
+                pairPerformance[trade.pair] = { trades: 0, profit: 0 };
+            }
+            pairPerformance[trade.pair].trades++;
+            pairPerformance[trade.pair].profit += Number(trade.net_profit || 0);
+        }
+    });
+
+    const sessionPerformance = {
+        Asian: 0, London: 0, 'New York': 0, Sydney: 0
+    };
+    filteredTrades.forEach(trade => {
+        if (trade.status === 'CLOSED' && trade.session) {
+            sessionPerformance[trade.session] = (sessionPerformance[trade.session] || 0) + Number(trade.net_profit || 0);
+        }
+    });
+
+    // Chart data
+    const equityData = calculateEquityData();
+    const riskRewardData = calculateRiskRewardData();
+    const assetAllocation = calculateAssetAllocation();
+    const cumulativePLData = calculateCumulativePL();
+    const histogramData = calculatePerformanceHistogram();
+
+    // Custom Tooltip Component
+    const CustomTooltip = ({ active, payload, label }) => {
+        if (active && payload && payload.length) {
+            return (
+                <div className="bg-bloomberg-bg-secondary border border-bloomberg-border rounded-lg p-3 shadow-xl">
+                    <p className="text-bloomberg-text-primary text-sm font-bold mb-1">{label}</p>
+                    {payload.map((entry, index) => (
+                        <p key={index} className="text-xs" style={{ color: entry.color }}>
+                            {entry.name}: <span className="font-bold">{entry.value}</span>
+                        </p>
+                    ))}
+                </div>
+            );
+        }
+        return null;
+    };
+
+    return (
+        <div className="max-w-[1920px] mx-auto px-3 py-2 space-y-2">
+            {/* Compact Header */}
+            <div className="flex items-center justify-between mb-2">
+                <h1 className="text-lg font-bold text-bloomberg-text-primary terminal-text flex items-center space-x-2">
+                    <span>Trading Dashboard</span>
+                    {refreshing && <span className="text-[10px] text-bloomberg-accent">● Syncing</span>}
+                </h1>
+                <div className="flex items-center space-x-3 text-[10px]">
+                    <div>
+                        <span className="text-bloomberg-text-muted">Balance: </span>
+                        <span className="text-bloomberg-accent terminal-text font-bold">${Number(user?.balance || 0).toFixed(2)}</span>
+                    </div>
+                    <div className="text-bloomberg-text-muted">MT5: {user?.accountNumber}</div>
+                </div>
+            </div>
+
+            {/* High-Density Top Stats Ribbon */}
+            <div className="card-bloomberg rounded-lg p-2 overflow-x-auto">
+                <div className="flex items-center space-x-2 min-w-max">
+                    {/* Total Trades */}
+                    <div className="flex-shrink-0 px-3 py-1.5 border-r border-bloomberg-border">
+                        <div className="text-[9px] text-bloomberg-text-muted uppercase font-semibold">Trades</div>
+                        <div className="text-lg font-bold text-bloomberg-accent terminal-text mt-0.5">{stats?.totalTrades || 0}</div>
+                        <div className="text-[8px] text-bloomberg-text-muted">Total</div>
+                    </div>
+
+                    {/* Win Rate */}
+                    <div className="flex-shrink-0 px-3 py-1.5 border-r border-bloomberg-border">
+                        <div className="text-[9px] text-bloomberg-text-muted uppercase font-semibold">Win Rate</div>
+                        <div className="text-lg font-bold text-bloomberg-accent terminal-text mt-0.5">{stats?.winRate || 0}%</div>
+                        <div className="text-[8px] text-bloomberg-text-muted">{winLossData.wins}W / {winLossData.losses}L</div>
+                    </div>
+
+                    {/* Total P/L */}
+                    <div className="flex-shrink-0 px-3 py-1.5 border-r border-bloomberg-border">
+                        <div className="text-[9px] text-bloomberg-text-muted uppercase font-semibold">P/L</div>
+                        <div className={`text-lg font-bold terminal-text mt-0.5 ${
+                            stats?.totalProfitLoss >= 0 ? 'text-bloomberg-success' : 'text-bloomberg-danger'
+                        }`}>
+                            ${Number(stats?.totalProfitLoss || 0).toFixed(2)}
+                        </div>
+                        <div className="text-[8px] text-bloomberg-text-muted">Net</div>
+                    </div>
+
+                    {/* Cumulative Return */}
+                    <div className="flex-shrink-0 px-3 py-1.5 border-r border-bloomberg-border">
+                        <div className="text-[9px] text-bloomberg-text-muted uppercase font-semibold">Cumulative</div>
+                        <div className={`text-lg font-bold terminal-text mt-0.5 ${
+                            journalAnalytics.accumulativeReturnNet >= 0 ? 'text-bloomberg-success' : 'text-bloomberg-danger'
+                        }`}>
+                            ${journalAnalytics.accumulativeReturnNet.toFixed(2)}
+                        </div>
+                        <div className="text-[8px] text-bloomberg-text-muted">{journalAnalytics.accumulativeReturnPercent.toFixed(1)}%</div>
+                    </div>
+
+                    {/* Daily Return */}
+                    <div className="flex-shrink-0 px-3 py-1.5 border-r border-bloomberg-border">
+                        <div className="text-[9px] text-bloomberg-text-muted uppercase font-semibold">Daily</div>
+                        <div className={`text-lg font-bold terminal-text mt-0.5 ${
+                            journalAnalytics.dailyReturn >= 0 ? 'text-bloomberg-success' : 'text-bloomberg-danger'
+                        }`}>
+                            ${journalAnalytics.dailyReturn.toFixed(2)}
+                        </div>
+                        <div className="text-[8px] text-bloomberg-text-muted">Today</div>
+                    </div>
+
+                    {/* Weekly Return */}
+                    <div className="flex-shrink-0 px-3 py-1.5 border-r border-bloomberg-border">
+                        <div className="text-[9px] text-bloomberg-text-muted uppercase font-semibold">Weekly</div>
+                        <div className={`text-lg font-bold terminal-text mt-0.5 ${
+                            journalAnalytics.weeklyReturn >= 0 ? 'text-bloomberg-success' : 'text-bloomberg-danger'
+                        }`}>
+                            ${journalAnalytics.weeklyReturn.toFixed(2)}
+                        </div>
+                        <div className="text-[8px] text-bloomberg-text-muted">7D</div>
+                    </div>
+
+                    {/* Monthly Return */}
+                    <div className="flex-shrink-0 px-3 py-1.5 border-r border-bloomberg-border">
+                        <div className="text-[9px] text-bloomberg-text-muted uppercase font-semibold">Monthly</div>
+                        <div className={`text-lg font-bold terminal-text mt-0.5 ${
+                            journalAnalytics.monthlyReturn >= 0 ? 'text-bloomberg-success' : 'text-bloomberg-danger'
+                        }`}>
+                            ${journalAnalytics.monthlyReturn.toFixed(2)}
+                        </div>
+                        <div className="text-[8px] text-bloomberg-text-muted">30D</div>
+                    </div>
+
+                    {/* Winners */}
+                    <div className="flex-shrink-0 px-3 py-1.5 border-r border-bloomberg-border">
+                        <div className="text-[9px] text-bloomberg-text-muted uppercase font-semibold">Winners</div>
+                        <div className="text-lg font-bold text-bloomberg-success terminal-text mt-0.5">
+                            ${journalAnalytics.returnOnWinners.toFixed(2)}
+                        </div>
+                        <div className="text-[8px] text-bloomberg-text-muted">Total</div>
+                    </div>
+
+                    {/* Losers */}
+                    <div className="flex-shrink-0 px-3 py-1.5 border-r border-bloomberg-border">
+                        <div className="text-[9px] text-bloomberg-text-muted uppercase font-semibold">Losers</div>
+                        <div className="text-lg font-bold text-bloomberg-danger terminal-text mt-0.5">
+                            ${journalAnalytics.returnOnLosers.toFixed(2)}
+                        </div>
+                        <div className="text-[8px] text-bloomberg-text-muted">Total</div>
+                    </div>
+
+                    {/* Profit Factor */}
+                    <div className="flex-shrink-0 px-3 py-1.5 border-r border-bloomberg-border">
+                        <div className="text-[9px] text-bloomberg-text-muted uppercase font-semibold">PF</div>
+                        <div className={`text-lg font-bold terminal-text mt-0.5 ${
+                            journalAnalytics.profitFactor >= 1 ? 'text-bloomberg-success' : 'text-bloomberg-danger'
+                        }`}>
+                            {journalAnalytics.profitFactor.toFixed(2)}
+                        </div>
+                        <div className="text-[8px] text-bloomberg-text-muted">
+                            {journalAnalytics.profitFactor >= 1 ? 'Good' : 'Bad'}
+                        </div>
+                    </div>
+
+                    {/* ROI */}
+                    <div className="flex-shrink-0 px-3 py-1.5">
+                        <div className="text-[9px] text-bloomberg-text-muted uppercase font-semibold">ROI</div>
+                        <div className={`text-lg font-bold terminal-text mt-0.5 ${
+                            journalAnalytics.accumulativeReturnPercent >= 0 ? 'text-bloomberg-success' : 'text-bloomberg-danger'
+                        }`}>
+                            {journalAnalytics.accumulativeReturnPercent.toFixed(2)}%
+                        </div>
+                        <div className="text-[8px] text-bloomberg-text-muted">Return</div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Compact Middle Section: Carousel Left + Calendar Right */}
+            <div className="grid grid-cols-[45%_55%] gap-2">
+                
+                {/* LEFT COLUMN - Carousel Cards */}
+                <div className="space-y-2">
+                    
+                    {/* Top Carousel Card - 4 Widgets */}
+                    <div className="relative card-bloomberg rounded-lg p-3 h-[180px]">
+                        {currentLeftCardIndex === 0 && (
+                            <>
+                                <h3 className="text-sm font-bold text-bloomberg-text-primary mb-2 flex items-center">
+                                    <PieChart size={14} className="mr-1" />
+                                    Win/Loss Ratio
+                                </h3>
+                                <div className="flex items-center justify-center space-x-6 py-4">
+                                    <div className="text-center">
+                                        <div className="text-3xl font-bold text-bloomberg-success terminal-text">
+                                            {winLossData.wins}
+                                        </div>
+                                        <div className="text-[10px] text-bloomberg-text-muted mt-1">Wins</div>
+                                        <div className="mt-1 h-2 w-24 bg-bloomberg-success/20 rounded-full overflow-hidden">
+                                            <div
+                                                className="h-full bg-bloomberg-success rounded-full"
+                                                style={{
+                                                    width: `${(winLossData.wins / (winLossData.wins + winLossData.losses || 1)) * 100}%`
+                                                }}
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="text-center">
+                                        <div className="text-3xl font-bold text-bloomberg-danger terminal-text">
+                                            {winLossData.losses}
+                                        </div>
+                                        <div className="text-[10px] text-bloomberg-text-muted mt-1">Losses</div>
+                                        <div className="mt-1 h-2 w-24 bg-bloomberg-danger/20 rounded-full overflow-hidden">
+                                            <div
+                                                className="h-full bg-bloomberg-danger rounded-full"
+                                                style={{
+                                                    width: `${(winLossData.losses / (winLossData.wins + winLossData.losses || 1)) * 100}%`
+                                                }}
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            </>
+                        )}
+
+                        {currentLeftCardIndex === 1 && (
+                                        </div>
+                                        <div className="text-sm text-bloomberg-text-muted mt-2">Losses</div>
+                                        <div className="mt-2 h-3 w-32 bg-bloomberg-danger/20 rounded-full overflow-hidden">
+                                            <div
+                                                className="h-full bg-bloomberg-danger rounded-full"
+                                                style={{
+                                                    width: `${(winLossData.losses / (winLossData.wins + winLossData.losses || 1)) * 100}%`
+                                                }}
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            </>

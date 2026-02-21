@@ -1,0 +1,11 @@
+# Trading Journal - Python Dependencies
+# Flask and related packages (should already be in main system)
+
+Flask>=2.0.0
+Flask-Session>=0.4.0
+
+# Note: These are typically already installed in the main TDJTT system
+# Only install if running standalone for testing
+
+# For testing standalone:
+# pip install -r requirements.txt
